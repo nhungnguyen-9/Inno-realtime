@@ -6,11 +6,12 @@ import { Toolbar } from "./toolbar";
 import { useCanRedo, useCanUndo, useHistory, useMutation, useOthersMapped, useSelf, useStorage } from "@/liveblocks.config";
 import { Camera, CanvasMode, CanvasState, Color, LayerType, Point, Side, XYWH } from "@/types/canvas";
 import { CursorsPresence } from "./cursors-presence";
-import { connectionIdToColor, pointerEventToCanvasPoint, resizeBounds } from "@/lib/utils";
+import { connectionIdToColor, findIntersectingLayersWithRectangle, pointerEventToCanvasPoint, resizeBounds } from "@/lib/utils";
 import { nanoid } from 'nanoid'
 import { LiveObject } from "@liveblocks/client";
 import { LayerPreview } from "./LayerPreview";
 import { SelectionBox } from "./selection-box";
+import { SelectionTools } from "./selection-tool";
 
 const MAX_LAYER = 100
 
@@ -74,6 +75,72 @@ export const Canvas = ({
             setMyPresence({ selection: [] }, { addToHistory: true })
         }
     }, [])
+
+    const startMultiSelection = useCallback((
+        current: Point,
+        origin: Point
+    ) => {
+        if (Math.abs(current.x - origin.x) + Math.abs(current.y - origin.y) > 5) {
+            setCanvasState({
+                mode: CanvasMode.SelectionNet,
+                origin,
+                current
+            })
+        }
+    }, [])
+
+    const updateSelectionNet = useMutation((
+        { storage, setMyPresence },
+        current: Point,
+        origin: Point
+    ) => {
+        const layers = storage.get('layers').toImmutable()
+        setCanvasState({
+            mode: CanvasMode.SelectionNet,
+            origin,
+            current
+        })
+
+        const ids = findIntersectingLayersWithRectangle(
+            layerIds,
+            layers,
+            origin,
+            current
+        )
+        setMyPresence({ selection: ids })
+    }, [layerIds])
+
+    const continueDrawing = useMutation((
+        { self, setMyPresence },
+        point: Point,
+        e: React.PointerEvent
+    ) => {
+        const { pencilDraft } = self.presence
+
+        if (canvasState.mode !== CanvasMode.Pencil || e.buttons !== 1 || pencilDraft == null) {
+            return
+        }
+
+        setMyPresence({
+            cursor: point,
+            pencilDraft:
+                pencilDraft.length === 1 &&
+                    pencilDraft[0][0] === point.x &&
+                    pencilDraft[0][1] === point.y ? pencilDraft : [...pencilDraft, [point.x, point.y, e.pressure]]
+        })
+
+    }, [canvasState.mode])
+
+    const startDrawing = useMutation((
+        { setMyPresence },
+        point: Point,
+        pressure: number
+    ) => {
+        setMyPresence({
+            pencilDraft: [[point.x, point.y, pressure]],
+            penColor: lastUsedColor
+        })
+    }, [lastUsedColor])
 
     const resizeSelectedLayer = useMutation((
         { storage, self },
@@ -153,10 +220,16 @@ export const Canvas = ({
 
         const current = pointerEventToCanvasPoint(e, camera)
 
-        if (canvasState.mode === CanvasMode.Resizing) {
+        if (canvasState.mode === CanvasMode.Pressing) {
+            startMultiSelection(current, canvasState.origin)
+        } else if (canvasState.mode === CanvasMode.SelectionNet) {
+            updateSelectionNet(current, canvasState.origin)
+        } else if (canvasState.mode === CanvasMode.Resizing) {
             resizeSelectedLayer(current)
         } else if (canvasState.mode === CanvasMode.Translating) {
             translateSelectedLayer(current)
+        } else if (canvasState.mode === CanvasMode.Pencil) {
+            continueDrawing(current, e)
         }
 
         setMyPresence({ cursor: current })
@@ -164,7 +237,10 @@ export const Canvas = ({
         camera,
         canvasState,
         resizeSelectedLayer,
-        translateSelectedLayer
+        translateSelectedLayer,
+        continueDrawing,
+        startMultiSelection,
+        updateSelectionNet
     ])
 
     const onPointerLeave = useMutation((
@@ -179,10 +255,16 @@ export const Canvas = ({
         const point = pointerEventToCanvasPoint(e, camera)
 
         if (canvasState.mode === CanvasMode.Inserting) {
-            // Add case for drawing
-            setCanvasState({ origin: point, mode: CanvasMode.Pressing })
+            return
         }
-    }, [camera, canvasState.mode, setCanvasState])
+
+        if (canvasState.mode === CanvasMode.Pencil) {
+            startDrawing(point, e.pressure)
+            return
+        }
+
+        setCanvasState({ origin: point, mode: CanvasMode.Pressing })
+    }, [camera, canvasState.mode, setCanvasState, startDrawing])
 
     const onPointerUp = useMutation((
         { },
@@ -268,6 +350,10 @@ export const Canvas = ({
             redo={history.redo}
             undo={history.undo}
         />
+        <SelectionTools
+            camera={camera}
+            setLastUsedColor={setLastUsedColor}
+        />
         <svg
             className="h-[100vh] w-[100vw]"
             onWheel={onWheel}
@@ -292,6 +378,15 @@ export const Canvas = ({
                 <SelectionBox
                     onResizeHandlePointerDown={onResizeHandlePointerDown}
                 />
+                {canvasState.mode === CanvasMode.SelectionNet && canvasState.current != null && (
+                    <rect
+                        className="fill-blue-500/5 stroke-blue-500 stroke-1"
+                        x={Math.min(canvasState.origin.x, canvasState.current.x)}
+                        y={Math.min(canvasState.origin.y, canvasState.current.y)}
+                        width={Math.abs(canvasState.origin.x - canvasState.current.x)}
+                        height={Math.abs(canvasState.origin.y - canvasState.current.y)}
+                    />
+                )}
                 <CursorsPresence />
             </g>
         </svg>
