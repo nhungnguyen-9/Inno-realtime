@@ -401,10 +401,10 @@ export const Canvas = ({
             }
         }
 
-        document.addEventListener('keydown', onKeyDown)
+        document.addEventListener('keydown', onKeyDown as unknown as EventListener)
 
         return () => {
-            document.removeEventListener('keydown', onKeyDown)
+            document.removeEventListener('keydown', onKeyDown as unknown as EventListener)
         }
 
     }, [deleteLayers, history])
